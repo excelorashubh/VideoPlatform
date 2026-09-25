@@ -206,6 +206,13 @@ a { color:inherit; text-decoration:none; }
 .sidebar-nav-scroll::-webkit-scrollbar { width:6px; }
 .sidebar-nav-scroll::-webkit-scrollbar-track { background:transparent; }
 .sidebar-nav-scroll::-webkit-scrollbar-thumb { background:var(--text-secondary); border-radius:999px; }
+@media (min-width:901px) {
+  .sidebar-nav-scroll { scrollbar-gutter:stable; scrollbar-color:transparent transparent; }
+  .sidebar-nav-scroll::-webkit-scrollbar { width:8px; }
+  .sidebar-nav-scroll::-webkit-scrollbar-thumb { background:transparent; transition:background-color 180ms ease; }
+  .sidebar:hover .sidebar-nav-scroll { scrollbar-color:var(--text-secondary) transparent; }
+  .sidebar:hover .sidebar-nav-scroll::-webkit-scrollbar-thumb { background:var(--text-secondary); }
+}
 nav { display:grid; gap:8px; }
 .eyebrow,.kicker,.card-label { text-transform:uppercase; letter-spacing:.12em; font-size:11px; font-weight:700; }
 .eyebrow { color:var(--text-secondary); margin:0 10px 8px; padding-top:12px; }
