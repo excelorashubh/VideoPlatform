@@ -1,0 +1,5 @@
+import { AppShell, PageHeading } from "../_components/AppShell";
+
+export default function DeveloperApiPage() {
+  return <AppShell eyebrow="Developer platform" title="API access"><PageHeading eyebrow="Build on GVP" title="Your applications" action="Create application" /><div className="api-key-card"><div><p className="kicker">Development key</p><h3>GVP local application</h3><code>gvp_test_••••••••••••••••</code></div><button className="primary-button">Rotate key</button></div><div className="panel api-docs"><p className="kicker">Available surfaces</p><h3>Start with the public contract.</h3><p className="muted">Search published videos, read channel metadata, and build approved viewer experiences through a versioned API.</p><a className="text-link" href="#">View API documentation</a></div></AppShell>;
+}
