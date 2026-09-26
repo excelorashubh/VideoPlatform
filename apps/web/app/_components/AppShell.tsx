@@ -341,6 +341,26 @@ export function AppShell({ children, active, eyebrow = "Global Video Platform", 
     };
   }, [headerPopup]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && mobileOpen) {
+        setMobileOpen(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [mobileOpen]);
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = mobileOpen ? "hidden" : previousOverflow;
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [mobileOpen]);
+
   function toggleHeaderPopup(popup: Exclude<HeaderPopup, null>) {
     setAccountOpen(false);
     setHeaderPopup((current) => current === popup ? null : popup);
@@ -370,13 +390,15 @@ export function AppShell({ children, active, eyebrow = "Global Video Platform", 
   }
 
   function handleNavigationToggle() {
-    if (window.matchMedia("(max-width: 900px)").matches) {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
       setMobileOpen((value) => !value);
       return;
     }
 
     setCollapsed((value) => !value);
   }
+
+  const menuButtonLabel = mobileOpen ? "Close navigation" : "Open navigation";
 
   const isActive = useMemo(() => {
     return (href: string) => {
@@ -432,7 +454,7 @@ export function AppShell({ children, active, eyebrow = "Global Video Platform", 
     <>
       <div className={`nav-backdrop ${mobileOpen ? "visible" : ""}`} aria-hidden={!mobileOpen} onClick={() => setMobileOpen(false)} />
       <main className={`shell ${collapsed ? "sidebar-collapsed" : ""}`}>
-        <aside className={`sidebar ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-open" : ""}`} aria-label="Sidebar navigation">
+        <aside id="gvp-viewer-sidebar" className={`sidebar ${collapsed ? "is-collapsed" : ""} ${mobileOpen ? "is-open" : ""}`} aria-label="Sidebar navigation">
           <div className="sidebar-nav-scroll">
             {navigationConfig.map((section) => (
               <nav key={section.label} aria-label={section.label} className="nav-section">
@@ -449,7 +471,9 @@ export function AppShell({ children, active, eyebrow = "Global Video Platform", 
               <button
                 type="button"
                 className="topbar-menu-button"
-                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                aria-label={menuButtonLabel}
+                aria-expanded={mobileOpen}
+                aria-controls="gvp-viewer-sidebar"
                 onClick={handleNavigationToggle}
               >
                 <IconMenu className="menu-icon" />
