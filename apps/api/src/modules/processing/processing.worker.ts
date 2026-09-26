@@ -66,14 +66,13 @@ export class ProcessingWorker {
       });
 
       try {
-        const expectedKey = `media/originals/${job.upload.creatorId}/${job.upload.videoId}/source`;
-        if (job.upload.storageKey !== expectedKey) throw new Error("Upload storage key is invalid");
         if (!(await this.objectStorage.objectExists(job.upload.storageKey))) {
           throw new Error("Upload object was not found");
         }
         await this.mediaProcessing.process({
           id: job.id,
           videoId: job.videoId,
+          creatorId: job.upload.creatorId,
           storageKey: job.upload.storageKey
         });
         await this.prisma.processingJob.update({

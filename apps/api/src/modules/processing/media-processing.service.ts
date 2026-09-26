@@ -10,6 +10,7 @@ import { ObjectStorageService } from "../../storage/object-storage.service.js";
 type ProcessingInput = {
   id: string;
   videoId: string;
+  creatorId: string;
   storageKey: string;
 };
 
@@ -59,21 +60,24 @@ export class MediaProcessingService {
       ]), ""].join("\n");
       await writeFile(masterPath, masterPlaylist);
 
-      await this.uploadDirectory(path.join(workDir, "hls"), `media/hls/${input.videoId}`);
-      await this.objectStorage.uploadFile(`media/thumbnails/${input.videoId}/default.jpg`, thumbnailPath, "image/jpeg");
-      await this.objectStorage.uploadFile(`media/hls/${input.videoId}/master.m3u8`, masterPath, "application/vnd.apple.mpegurl");
+      const hlsPrefix = this.objectStorage.buildUserVideoKey(input.creatorId, input.videoId, "hls");
+      const thumbnailKey = this.objectStorage.buildUserVideoKey(input.creatorId, input.videoId, "thumbnails", "default.jpg");
+      await this.uploadDirectory(path.join(workDir, "hls"), hlsPrefix);
+      await this.objectStorage.uploadFile(thumbnailKey, thumbnailPath, "image/jpeg");
+      await this.objectStorage.uploadFile(`${hlsPrefix}/master.m3u8`, masterPath, "application/vnd.apple.mpegurl");
 
       await this.prisma.$transaction(async (transaction) => {
         for (const rendition of renditions) {
+          const manifestKey = `${hlsPrefix}/${rendition.name}/index.m3u8`;
           await transaction.videoTranscode.upsert({
             where: { videoId_rendition: { videoId: input.videoId, rendition: rendition.name } },
-            update: { manifestKey: `media/hls/${input.videoId}/${rendition.name}/index.m3u8`, status: "READY" },
-            create: { videoId: input.videoId, rendition: rendition.name, manifestKey: `media/hls/${input.videoId}/${rendition.name}/index.m3u8`, status: "READY" }
+            update: { manifestKey, status: "READY" },
+            create: { videoId: input.videoId, rendition: rendition.name, manifestKey: manifestKey, status: "READY" }
           });
         }
         await transaction.thumbnail.deleteMany({ where: { videoId: input.videoId, isDefault: true } });
         await transaction.thumbnail.create({
-          data: { videoId: input.videoId, storageKey: `media/thumbnails/${input.videoId}/default.jpg`, isDefault: true }
+          data: { videoId: input.videoId, storageKey: thumbnailKey, isDefault: true }
         });
         await transaction.video.update({ where: { id: input.videoId }, data: { status: "READY" } });
       });

@@ -1,5 +1,5 @@
 export class CreateUploadDto {
-  creatorId!: string;
+  filename!: string;
   fileSize!: number;
   contentType!: string;
   videoId!: string;
