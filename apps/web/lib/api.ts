@@ -203,14 +203,16 @@ export async function getPublicVideo(id: string) {
 }
 
 export type VideoEngagement = { likeCount: number; dislikeCount: number; commentCount: number; subscriberCount: number; viewerReaction: "LIKE" | "DISLIKE" | null; viewerSubscribed: boolean };
+export type VideoReaction = Pick<VideoEngagement, "likeCount" | "dislikeCount" | "viewerReaction">;
+export type ChannelSubscriptionState = { subscribed: boolean; subscriberCount: number };
 export async function getVideoEngagement(id: string) { return apiRequest<VideoEngagement>(`/videos/${encodeURIComponent(id)}/engagement`); }
 export async function registerVideoView(id: string) { return apiRequest<{ registered: boolean }>(`/videos/${encodeURIComponent(id)}/view`, { method: "POST" }); }
-export async function reactToVideo(videoId: string, type: "LIKE" | "DISLIKE") { return apiRequest<VideoEngagement>("/likes", { method: "POST", body: JSON.stringify({ videoId, type }) }); }
-export async function removeVideoReaction(videoId: string) { return apiRequest<VideoEngagement>("/likes", { method: "DELETE", body: JSON.stringify({ videoId }) }); }
+export async function reactToVideo(videoId: string, type: "LIKE" | "DISLIKE") { return apiRequest<VideoReaction>("/likes", { method: "POST", body: JSON.stringify({ videoId, type }) }); }
+export async function removeVideoReaction(videoId: string) { return apiRequest<VideoReaction>("/likes", { method: "DELETE", body: JSON.stringify({ videoId }) }); }
 export async function getVideoReaction(videoId: string) { return apiRequest<Pick<VideoEngagement, "viewerReaction">>(`/likes/video/${encodeURIComponent(videoId)}`); }
-export async function subscribeToChannel(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>("/subscriptions", { method: "POST", body: JSON.stringify({ channelId }) }); }
-export async function unsubscribeFromChannel(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>("/subscriptions", { method: "DELETE", body: JSON.stringify({ channelId }) }); }
-export async function getChannelSubscription(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>(`/subscriptions/channel/${encodeURIComponent(channelId)}`); }
+export async function subscribeToChannel(channelId: string) { return apiRequest<ChannelSubscriptionState>("/subscriptions", { method: "POST", body: JSON.stringify({ channelId }) }); }
+export async function unsubscribeFromChannel(channelId: string) { return apiRequest<ChannelSubscriptionState>("/subscriptions", { method: "DELETE", body: JSON.stringify({ channelId }) }); }
+export async function getChannelSubscription(channelId: string) { return apiRequest<ChannelSubscriptionState>(`/subscriptions/channel/${encodeURIComponent(channelId)}`); }
 export type VideoComment = { id: string; body: string; videoId: string; author: { id: string; displayName: string }; createdAt: string; parentId: string | null };
 export async function getVideoComments(videoId: string) { return apiRequest<VideoComment[]>(`/comments/video/${encodeURIComponent(videoId)}`); }
 export async function createVideoComment(videoId: string, body: string, parentId?: string) { return apiRequest<VideoComment>("/comments", { method: "POST", body: JSON.stringify({ videoId, body, parentId }) }); }
