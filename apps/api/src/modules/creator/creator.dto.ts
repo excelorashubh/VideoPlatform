@@ -6,3 +6,16 @@ export class SubmitCreatorApplicationDto {
   profileImageKey?: string;
   termsAccepted?: boolean;
 }
+
+export class CreateCreatorDraftVideoDto {
+  title!: string;
+  description?: string;
+  videoId?: string;
+  visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE";
+}
+
+export class UpdateCreatorVideoDto {
+  title?: string;
+  description?: string;
+  visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE";
+}

@@ -1,38 +1,39 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { PrismaService } from "../../database/prisma.service.js";
 import type { LikeDto } from "./like.dto.js";
-
-export type LikeState = LikeDto & {
-  liked: boolean;
-  updatedAt: string;
-};
 
 @Injectable()
 export class LikesService {
-  private readonly likes = new Map<string, LikeState>();
+  constructor(private readonly prisma: PrismaService) {}
 
-  like(input: LikeDto): LikeState {
+  async react(userId: string, input: LikeDto) {
     this.validate(input);
-    const state = { ...input, liked: true, updatedAt: new Date().toISOString() };
-    this.likes.set(this.key(input.viewerId, input.videoId), state);
-    return state;
+    await this.ensureViewable(input.videoId);
+    const reaction = input.type ?? "LIKE";
+    await this.prisma.videoReaction.upsert({ where: { userId_videoId: { userId, videoId: input.videoId } }, update: { type: reaction }, create: { userId, videoId: input.videoId, type: reaction } });
+    return this.state(userId, input.videoId);
   }
 
-  unlike(input: LikeDto): LikeState {
-    this.validate(input);
-    this.likes.delete(this.key(input.viewerId, input.videoId));
-    return { ...input, liked: false, updatedAt: new Date().toISOString() };
+  async unreact(userId: string, videoId: string) {
+    await this.prisma.videoReaction.deleteMany({ where: { userId, videoId } });
+    return this.state(userId, videoId);
   }
 
-  getState(input: LikeDto): LikeState {
-    this.validate(input);
-    return this.likes.get(this.key(input.viewerId, input.videoId)) ?? { ...input, liked: false, updatedAt: new Date().toISOString() };
+  async state(userId: string | null, videoId: string) {
+    const [likes, dislikes, reaction] = await Promise.all([
+      this.prisma.videoReaction.count({ where: { videoId, type: "LIKE" } }),
+      this.prisma.videoReaction.count({ where: { videoId, type: "DISLIKE" } }),
+      userId ? this.prisma.videoReaction.findUnique({ where: { userId_videoId: { userId, videoId } }, select: { type: true } }) : null
+    ]);
+    return { likeCount: likes, dislikeCount: dislikes, viewerReaction: reaction?.type ?? null };
   }
 
   private validate(input: LikeDto) {
-    if (!input.viewerId || !input.videoId) throw new BadRequestException("viewerId and videoId are required");
+    if (!input.videoId || (input.type && !["LIKE", "DISLIKE"].includes(input.type))) throw new BadRequestException("videoId and a valid reaction type are required");
   }
 
-  private key(viewerId: string, videoId: string) {
-    return `${viewerId}:${videoId}`;
+  private async ensureViewable(videoId: string) {
+    const video = await this.prisma.video.findFirst({ where: { id: videoId, visibility: { in: ["PUBLIC", "UNLISTED"] }, status: "READY", deletedAt: null }, select: { id: true } });
+    if (!video) throw new NotFoundException("Video not found");
   }
 }

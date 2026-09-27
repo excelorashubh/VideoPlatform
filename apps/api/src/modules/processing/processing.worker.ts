@@ -66,6 +66,8 @@ export class ProcessingWorker {
       });
 
       try {
+        const video = await this.prisma.video.findUnique({ where: { id: job.videoId }, select: { id: true, deletedAt: true } });
+        if (!video || video.deletedAt) return;
         if (!(await this.objectStorage.objectExists(job.upload.storageKey))) {
           throw new Error("Upload object was not found");
         }
@@ -75,6 +77,8 @@ export class ProcessingWorker {
           creatorId: job.upload.creatorId,
           storageKey: job.upload.storageKey
         });
+        const stillExists = await this.prisma.video.findUnique({ where: { id: job.videoId }, select: { id: true, deletedAt: true } });
+        if (!stillExists || stillExists.deletedAt) return;
         await this.prisma.processingJob.update({
           where: { id: job.id },
           data: { status: "COMPLETED", lastError: null }

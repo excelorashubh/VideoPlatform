@@ -20,5 +20,5 @@ const studioPaths = new Set([
 export function CreatorLayoutFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
-  return !studioPaths.has(pathname) ? children : <CreatorStudio fallback={pathname === "/creator" ? children : undefined} />;
+  return !studioPaths.has(pathname) ? children : <CreatorStudio content={pathname === "/creator/content" ? children : undefined} fallback={pathname === "/creator" ? children : undefined} />;
 }

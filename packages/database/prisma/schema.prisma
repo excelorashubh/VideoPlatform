@@ -23,6 +23,12 @@ enum VideoStatus {
   ARCHIVED
 }
 
+enum VideoVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
 enum UploadStatus {
   CREATED
   COMPLETED
@@ -54,6 +60,11 @@ enum NotificationType {
   SYSTEM
 }
 
+enum VideoReactionType {
+  LIKE
+  DISLIKE
+}
+
 enum CreatorApplicationStatus {
   DRAFT
   SUBMITTED
@@ -79,6 +90,7 @@ model User {
   videos      Video[]
   comments    Comment[]
   likes       Like[]
+  reactions   VideoReaction[]
   subscriptions Subscription[]
   history     WatchHistory[]
   playlists   Playlist[]
@@ -144,6 +156,7 @@ model Video {
   channelId   String          @db.Uuid
   title       String
   description String?
+  visibility  VideoVisibility  @default(PUBLIC)
   status      VideoStatus     @default(DRAFT)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
@@ -156,6 +169,7 @@ model Video {
   thumbnails  Thumbnail[]
   comments    Comment[]
   likes       Like[]
+  reactions   VideoReaction[]
   history     WatchHistory[]
   playlistItems PlaylistItem[]
   uploads     Upload[]
@@ -229,6 +243,7 @@ model Thumbnail {
   videoId    String   @db.Uuid
   storageKey String   @unique
   isDefault  Boolean  @default(false)
+  isCustom   Boolean  @default(false)
   createdAt  DateTime @default(now())
   video      Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
 
@@ -263,6 +278,19 @@ model Like {
 
   @@unique([userId, videoId])
   @@index([videoId, createdAt])
+}
+
+model VideoReaction {
+  id        String            @id @default(uuid()) @db.Uuid
+  userId    String            @db.Uuid
+  videoId   String            @db.Uuid
+  type      VideoReactionType
+  createdAt DateTime           @default(now())
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video     Video             @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, videoId])
+  @@index([videoId, type])
 }
 
 model Subscription {

@@ -6,6 +6,7 @@
   "scripts": {
     "dev:web": "npm run dev --workspace @gvp/web",
     "dev:api": "npm run start:dev --workspace @gvp/api",
+    "dev:worker": "npm run build --workspace @gvp/api && npm run start:worker --workspace @gvp/api",
     "build": "npm run build --workspaces",
     "typecheck": "npm run typecheck --workspaces",
     "db:generate": "npm run db:generate --workspace @gvp/database",

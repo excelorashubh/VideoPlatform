@@ -1,40 +1,36 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { PrismaService } from "../../database/prisma.service.js";
 import type { SubscriptionDto } from "./subscription.dto.js";
-
-export type SubscriptionState = SubscriptionDto & {
-  subscribed: boolean;
-  subscribedAt?: string;
-};
 
 @Injectable()
 export class SubscriptionsService {
-  private readonly subscriptions = new Map<string, SubscriptionState>();
+  constructor(private readonly prisma: PrismaService) {}
 
-  subscribe(input: SubscriptionDto): SubscriptionState {
+  async subscribe(userId: string, input: SubscriptionDto) {
     this.validate(input);
-    const key = this.key(input.viewerId, input.channelId);
-    const state: SubscriptionState = { ...input, subscribed: true, subscribedAt: new Date().toISOString() };
-    this.subscriptions.set(key, state);
-    return state;
+    await this.ensureChannel(input.channelId);
+    await this.prisma.subscription.upsert({ where: { userId_channelId: { userId, channelId: input.channelId } }, update: {}, create: { userId, channelId: input.channelId } });
+    return this.state(userId, input.channelId);
   }
 
-  unsubscribe(input: SubscriptionDto): SubscriptionState {
-    this.validate(input);
-    const key = this.key(input.viewerId, input.channelId);
-    this.subscriptions.delete(key);
-    return { ...input, subscribed: false };
+  async unsubscribe(userId: string, channelId: string) {
+    await this.prisma.subscription.deleteMany({ where: { userId, channelId } });
+    return this.state(userId, channelId);
   }
 
-  getState(input: SubscriptionDto): SubscriptionState {
-    this.validate(input);
-    return this.subscriptions.get(this.key(input.viewerId, input.channelId)) ?? { ...input, subscribed: false };
+  async state(userId: string, channelId: string) {
+    const [subscription, subscriberCount] = await Promise.all([
+      this.prisma.subscription.findUnique({ where: { userId_channelId: { userId, channelId } }, select: { createdAt: true } }),
+      this.prisma.subscription.count({ where: { channelId } })
+    ]);
+    return { subscribed: Boolean(subscription), subscribedAt: subscription?.createdAt ?? null, subscriberCount };
   }
 
   private validate(input: SubscriptionDto) {
-    if (!input.viewerId || !input.channelId) throw new BadRequestException("viewerId and channelId are required");
+    if (!input.channelId) throw new BadRequestException("channelId is required");
   }
 
-  private key(viewerId: string, channelId: string) {
-    return `${viewerId}:${channelId}`;
+  private async ensureChannel(channelId: string) {
+    if (!(await this.prisma.channel.findUnique({ where: { id: channelId }, select: { id: true } }))) throw new NotFoundException("Channel not found");
   }
 }

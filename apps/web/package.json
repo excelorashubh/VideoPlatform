@@ -10,6 +10,7 @@
     "lint": "echo No web lint configured yet"
   },
   "dependencies": {
+    "hls.js": "^1.7.3",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest"

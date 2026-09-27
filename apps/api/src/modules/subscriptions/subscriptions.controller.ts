@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Post, Delete } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Delete } from "@nestjs/common";
+import { CurrentUser } from "../auth/current-user.decorator.js";
 import { SubscriptionDto } from "./subscription.dto.js";
 import { SubscriptionsService } from "./subscriptions.service.js";
 
@@ -7,17 +8,17 @@ export class SubscriptionsController {
   constructor(private readonly subscriptionsService: SubscriptionsService) {}
 
   @Post()
-  subscribe(@Body() input: SubscriptionDto) {
-    return this.subscriptionsService.subscribe(input);
+  subscribe(@CurrentUser() user: { id: string }, @Body() input: SubscriptionDto) {
+    return this.subscriptionsService.subscribe(user.id, input);
   }
 
   @Delete()
-  unsubscribe(@Body() input: SubscriptionDto) {
-    return this.subscriptionsService.unsubscribe(input);
+  unsubscribe(@CurrentUser() user: { id: string }, @Body() input: SubscriptionDto) {
+    return this.subscriptionsService.unsubscribe(user.id, input.channelId);
   }
 
-  @Get("state")
-  state(@Body() input: SubscriptionDto) {
-    return this.subscriptionsService.getState(input);
+  @Get("channel/:channelId")
+  state(@CurrentUser() user: { id: string }, @Param("channelId") channelId: string) {
+    return this.subscriptionsService.state(user.id, channelId);
   }
 }

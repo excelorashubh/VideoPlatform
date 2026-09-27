@@ -1,4 +1,4 @@
 export class LikeDto {
-  viewerId!: string;
   videoId!: string;
+  type?: "LIKE" | "DISLIKE";
 }

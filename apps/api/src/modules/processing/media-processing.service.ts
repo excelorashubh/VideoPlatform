@@ -62,11 +62,15 @@ export class MediaProcessingService {
 
       const hlsPrefix = this.objectStorage.buildUserVideoKey(input.creatorId, input.videoId, "hls");
       const thumbnailKey = this.objectStorage.buildUserVideoKey(input.creatorId, input.videoId, "thumbnails", "default.jpg");
+      const customThumbnail = await this.prisma.thumbnail.findFirst({ where: { videoId: input.videoId, isCustom: true } });
+      const beforeUpload = await this.prisma.video.findUnique({ where: { id: input.videoId }, select: { deletedAt: true } });
+      if (!beforeUpload || beforeUpload.deletedAt) throw new Error("Video was deleted during processing");
       await this.uploadDirectory(path.join(workDir, "hls"), hlsPrefix);
-      await this.objectStorage.uploadFile(thumbnailKey, thumbnailPath, "image/jpeg");
+      if (!customThumbnail) await this.objectStorage.uploadFile(thumbnailKey, thumbnailPath, "image/jpeg");
       await this.objectStorage.uploadFile(`${hlsPrefix}/master.m3u8`, masterPath, "application/vnd.apple.mpegurl");
 
-      await this.prisma.$transaction(async (transaction) => {
+      try {
+        await this.prisma.$transaction(async (transaction) => {
         for (const rendition of renditions) {
           const manifestKey = `${hlsPrefix}/${rendition.name}/index.m3u8`;
           await transaction.videoTranscode.upsert({
@@ -75,12 +79,27 @@ export class MediaProcessingService {
             create: { videoId: input.videoId, rendition: rendition.name, manifestKey: manifestKey, status: "READY" }
           });
         }
-        await transaction.thumbnail.deleteMany({ where: { videoId: input.videoId, isDefault: true } });
-        await transaction.thumbnail.create({
-          data: { videoId: input.videoId, storageKey: thumbnailKey, isDefault: true }
+        await transaction.videoTranscode.upsert({
+          where: { videoId_rendition: { videoId: input.videoId, rendition: "master" } },
+          update: { manifestKey: `${hlsPrefix}/master.m3u8`, status: "READY" },
+          create: { videoId: input.videoId, rendition: "master", manifestKey: `${hlsPrefix}/master.m3u8`, status: "READY" }
         });
-        await transaction.video.update({ where: { id: input.videoId }, data: { status: "READY" } });
-      });
+        await transaction.thumbnail.deleteMany({ where: { videoId: input.videoId, isDefault: true, isCustom: false } });
+        if (!customThumbnail) await transaction.thumbnail.create({
+          data: { videoId: input.videoId, storageKey: thumbnailKey, isDefault: true, isCustom: false }
+        });
+          const currentVideo = await transaction.video.findUnique({ where: { id: input.videoId }, select: { visibility: true, deletedAt: true } });
+          if (!currentVideo || currentVideo.deletedAt) throw new Error("Video was deleted during processing");
+          await transaction.video.update({ where: { id: input.videoId }, data: { status: "READY", publishedAt: currentVideo.visibility === "PUBLIC" ? new Date() : null } });
+        });
+      } catch (error) {
+        const currentVideo = await this.prisma.video.findUnique({ where: { id: input.videoId }, select: { deletedAt: true } });
+        if (!currentVideo || currentVideo.deletedAt) {
+          await this.objectStorage.deletePrefix(`${this.objectStorage.buildUserVideoKey(input.creatorId, input.videoId, "hls")}/`);
+          if (!customThumbnail) await this.objectStorage.deleteObject(thumbnailKey);
+        }
+        throw error;
+      }
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }

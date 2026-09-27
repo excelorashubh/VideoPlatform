@@ -9,6 +9,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   ListBucketsCommand,
   PutObjectCommand,
   S3Client,
@@ -124,6 +125,23 @@ export class ObjectStorageService {
     };
   }
 
+  async getObjectPrefix(key: string, length: number) {
+    const response = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Range: `bytes=0-${Math.max(0, length - 1)}`
+    }));
+    if (!response.Body) throw new Error(`Object ${key} has no readable body`);
+    const bytes = await response.Body.transformToByteArray();
+    return Buffer.from(bytes).subarray(0, length);
+  }
+
+  async getObjectText(key: string) {
+    const response = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    if (!response.Body) throw new Error(`Object ${key} has no readable body`);
+    return response.Body.transformToString();
+  }
+
   async deleteObject(key: string) {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
     return { key, deleted: true };
@@ -136,6 +154,21 @@ export class ObjectStorageService {
       Delete: { Objects: keys.map((key) => ({ Key: key })) }
     }));
     return result.Deleted ?? [];
+  }
+
+  async deletePrefix(prefix: string) {
+    let continuationToken: string | undefined;
+    let deleted = 0;
+    do {
+      const page = await this.client.send(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: continuationToken }));
+      const keys = (page.Contents ?? []).flatMap((object) => object.Key ? [object.Key] : []);
+      if (keys.length) {
+        await this.deleteObjects(keys);
+        deleted += keys.length;
+      }
+      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return deleted;
   }
 
   async copyObject(sourceKey: string, destinationKey: string) {

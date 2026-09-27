@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Post } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, Post } from "@nestjs/common";
+import { CurrentUser } from "../auth/current-user.decorator.js";
 import { LikeDto } from "./like.dto.js";
 import { LikesService } from "./likes.service.js";
 
@@ -7,17 +8,17 @@ export class LikesController {
   constructor(private readonly likesService: LikesService) {}
 
   @Post()
-  like(@Body() input: LikeDto) {
-    return this.likesService.like(input);
+  like(@CurrentUser() user: { id: string }, @Body() input: LikeDto) {
+    return this.likesService.react(user.id, input);
   }
 
   @Delete()
-  unlike(@Body() input: LikeDto) {
-    return this.likesService.unlike(input);
+  unlike(@CurrentUser() user: { id: string }, @Body() input: LikeDto) {
+    return this.likesService.unreact(user.id, input.videoId);
   }
 
-  @Get("state")
-  state(@Body() input: LikeDto) {
-    return this.likesService.getState(input);
+  @Get("video/:videoId")
+  state(@CurrentUser() user: { id: string }, @Param("videoId") videoId: string) {
+    return this.likesService.state(user.id, videoId);
   }
 }

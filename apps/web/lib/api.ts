@@ -157,11 +157,130 @@ export type CreatorDashboard = {
   creator: { name: string; handle: string | null; bio: string | null; profileImageKey: string | null };
   channel: { id: string; handle: string; displayName: string; description: string | null; avatarKey: string | null; subscribers: number } | null;
   stats: { subscribers: number; videos: number; views: number; comments: number };
-  videos: Array<{ id: string; title: string; status: string; createdAt: string; publishedAt: string | null; _count: { likes: number; comments: number; history: number }; thumbnails: Array<{ storageKey: string }> }>;
+  videos: Array<{ id: string; title: string; description?: string | null; visibility: "PUBLIC" | "UNLISTED" | "PRIVATE"; status: string; creatorStatus?: string; createdAt: string; publishedAt: string | null; thumbnailUrl?: string | null; _count: { likes: number; comments: number; history: number }; thumbnails: Array<{ storageKey: string; isCustom?: boolean }> }>;
 };
 
 export async function getCreatorDashboard() {
   return apiRequest<CreatorDashboard>("/creator/dashboard");
+}
+
+export type CreatorContentItem = {
+  id: string;
+  title: string;
+  description: string | null;
+  visibility: "PUBLIC" | "UNLISTED" | "PRIVATE";
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  thumbnailUrl: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+};
+
+export async function getCreatorContent() {
+  return apiRequest<{ items: CreatorContentItem[]; total: number }>("/creator/content");
+}
+
+export type PublicVideo = {
+  id: string;
+  title: string;
+  description: string | null;
+  thumbnailUrl: string | null;
+  videoUrl: string | null;
+  creator: { id: string; channelId: string; name: string; handle: string; avatarUrl: string | null };
+  views: number;
+  publishedAt: string;
+};
+
+export async function getPublicVideos() {
+  return apiRequest<{ items: PublicVideo[]; total: number }>("/videos/public");
+}
+
+export async function getPublicVideo(id: string) {
+  return apiRequest<PublicVideo>(`/videos/${encodeURIComponent(id)}`);
+}
+
+export type VideoEngagement = { likeCount: number; dislikeCount: number; commentCount: number; subscriberCount: number; viewerReaction: "LIKE" | "DISLIKE" | null; viewerSubscribed: boolean };
+export async function getVideoEngagement(id: string) { return apiRequest<VideoEngagement>(`/videos/${encodeURIComponent(id)}/engagement`); }
+export async function registerVideoView(id: string) { return apiRequest<{ registered: boolean }>(`/videos/${encodeURIComponent(id)}/view`, { method: "POST" }); }
+export async function reactToVideo(videoId: string, type: "LIKE" | "DISLIKE") { return apiRequest<VideoEngagement>("/likes", { method: "POST", body: JSON.stringify({ videoId, type }) }); }
+export async function removeVideoReaction(videoId: string) { return apiRequest<VideoEngagement>("/likes", { method: "DELETE", body: JSON.stringify({ videoId }) }); }
+export async function getVideoReaction(videoId: string) { return apiRequest<Pick<VideoEngagement, "viewerReaction">>(`/likes/video/${encodeURIComponent(videoId)}`); }
+export async function subscribeToChannel(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>("/subscriptions", { method: "POST", body: JSON.stringify({ channelId }) }); }
+export async function unsubscribeFromChannel(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>("/subscriptions", { method: "DELETE", body: JSON.stringify({ channelId }) }); }
+export async function getChannelSubscription(channelId: string) { return apiRequest<{ subscribed: boolean; subscriberCount: number }>(`/subscriptions/channel/${encodeURIComponent(channelId)}`); }
+export type VideoComment = { id: string; body: string; videoId: string; author: { id: string; displayName: string }; createdAt: string; parentId: string | null };
+export async function getVideoComments(videoId: string) { return apiRequest<VideoComment[]>(`/comments/video/${encodeURIComponent(videoId)}`); }
+export async function createVideoComment(videoId: string, body: string, parentId?: string) { return apiRequest<VideoComment>("/comments", { method: "POST", body: JSON.stringify({ videoId, body, parentId }) }); }
+export async function deleteVideoComment(id: string) { return apiRequest(`/comments/${encodeURIComponent(id)}`, { method: "DELETE" }); }
+
+export function getPublicVideoMediaUrl(id: string) {
+  return `${API_BASE_URL}/videos/${encodeURIComponent(id)}/stream/master.m3u8`;
+}
+
+export async function createCreatorDraftVideo(input: { title: string; description?: string; videoId?: string; visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE" }) {
+  return apiRequest<{ id: string; creatorId: string; channelId: string; title: string; description: string | null; status: string }>("/creator/videos/draft", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateCreatorVideo(videoId: string, input: { title?: string; description?: string; visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE" }) {
+  return apiRequest<CreatorContentItem>(`/creator/videos/${encodeURIComponent(videoId)}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export async function deleteCreatorVideo(videoId: string) {
+  return apiRequest<{ id: string; deleted: boolean }>(`/creator/videos/${encodeURIComponent(videoId)}`, { method: "DELETE" });
+}
+
+export async function retryCreatorVideoProcessing(videoId: string) {
+  return apiRequest<{ id: string; status: string }>(`/creator/videos/${encodeURIComponent(videoId)}/retry-processing`, { method: "POST" });
+}
+
+export async function createThumbnailUpload(videoId: string, input: { contentType: string; fileSize: number }) {
+  return apiRequest<{ key: string; uploadUrl: string }>(`/creator/videos/${encodeURIComponent(videoId)}/thumbnail/upload`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function completeThumbnailUpload(videoId: string, key: string) {
+  return apiRequest<{ videoId: string; key: string }>(`/creator/videos/${encodeURIComponent(videoId)}/thumbnail/complete`, { method: "POST", body: JSON.stringify({ key }) });
+}
+
+export async function removeCreatorThumbnail(videoId: string, key: string) {
+  return apiRequest<{ videoId: string; key: string; removed: boolean }>(`/creator/videos/${encodeURIComponent(videoId)}/thumbnail`, { method: "DELETE", body: JSON.stringify({ key }) });
+}
+
+export type UploadSession = {
+  uploadId: string;
+  videoId: string;
+  creatorId: string;
+  fileSize: number;
+  contentType: string;
+  storageKey: string;
+  uploadStatus: "created" | "completed";
+  createdAt: string;
+  completedAt?: string;
+  processingJobId?: string;
+  uploadUrl?: string;
+};
+
+export async function createUploadSession(input: { filename: string; fileSize: number; contentType: string; videoId: string }) {
+  return apiRequest<UploadSession & { uploadUrl: string }>("/uploads/sessions", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function completeUploadSession(uploadId: string, checksum: string) {
+  return apiRequest<UploadSession>(`/uploads/sessions/${encodeURIComponent(uploadId)}/complete`, {
+    method: "POST",
+    body: JSON.stringify({ checksum })
+  });
+}
+
+export async function getUploadSession(uploadId: string) {
+  return apiRequest<UploadSession>(`/uploads/sessions/${encodeURIComponent(uploadId)}`);
 }
 
 export async function submitCreatorApplication(input: CreatorApplicationInput) {

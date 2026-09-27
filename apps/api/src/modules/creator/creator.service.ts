@@ -1,8 +1,9 @@
-import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../database/prisma.service.js";
 import { ObjectStorageService } from "../../storage/object-storage.service.js";
-import type { SubmitCreatorApplicationDto } from "./creator.dto.js";
+import { RedisQueueService } from "../../queue/redis-queue.service.js";
+import type { CreateCreatorDraftVideoDto, SubmitCreatorApplicationDto, UpdateCreatorVideoDto } from "./creator.dto.js";
 import { isCreatorVerificationComplete } from "./verification-policy.js";
 
 @Injectable()
@@ -11,7 +12,8 @@ export class CreatorService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly objectStorage: ObjectStorageService
+    private readonly objectStorage: ObjectStorageService,
+    private readonly queue: RedisQueueService
   ) {}
 
   async getApplication(userId: string) {
@@ -48,16 +50,22 @@ export class CreatorService {
     }
 
     const channel = user.channels[0] ?? null;
-    const videos = await this.prisma.video.findMany({
+    const videoRows = await this.prisma.video.findMany({
       where: { creatorId: userId, deletedAt: null },
       orderBy: { createdAt: "desc" },
       take: 10,
       select: {
-        id: true, title: true, status: true, createdAt: true, publishedAt: true,
+        id: true, title: true, visibility: true, status: true, createdAt: true, publishedAt: true,
         _count: { select: { likes: true, comments: true, history: true } },
-        thumbnails: { where: { isDefault: true }, take: 1, select: { storageKey: true } }
+        thumbnails: { where: { isDefault: true }, take: 1, select: { storageKey: true, isCustom: true } },
+        processingJobs: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, attempts: true, lastError: true, updatedAt: true } }
       }
     });
+    const videos = await Promise.all(videoRows.map(async (video) => ({
+      ...video,
+      creatorStatus: video.processingJobs[0] && ["QUEUED", "PROCESSING"].includes(video.processingJobs[0].status) ? "PROCESSING" : video.status,
+      thumbnailUrl: video.thumbnails[0] ? await this.objectStorage.createPresignedDownloadUrl(video.thumbnails[0].storageKey, 300) : null
+    })));
     const [videoCount, views, comments] = await Promise.all([
       this.prisma.video.count({ where: { creatorId: userId, deletedAt: null } }),
       this.prisma.watchHistory.count({ where: { video: { creatorId: userId, deletedAt: null } } }),
@@ -75,6 +83,196 @@ export class CreatorService {
       stats: { subscribers: channel?._count.subscriptions ?? 0, videos: videoCount, views, comments },
       videos
     };
+  }
+
+  async getContent(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, creatorApplication: { select: { status: true } } } });
+    if (!user || (user.role !== "CREATOR" && user.role !== "ADMIN" && user.creatorApplication?.status !== "APPROVED")) {
+      throw new ConflictException("Active creator access required");
+    }
+
+    const videos = await this.prisma.video.findMany({
+      where: { creatorId: userId, deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        visibility: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        publishedAt: true,
+        channel: { select: { displayName: true, handle: true, avatarKey: true } },
+        _count: { select: { likes: true, comments: true, history: true } },
+        thumbnails: { where: { isDefault: true }, take: 1, select: { storageKey: true, isCustom: true } },
+        uploads: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true } },
+        processingJobs: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, attempts: true, lastError: true, updatedAt: true } }
+      }
+    });
+
+    const items = await Promise.all(videos.map(async (video) => {
+      const jobStatus = video.processingJobs[0]?.status;
+      const uploadStatus = video.uploads[0]?.status;
+      const status = jobStatus === "FAILED" ? "FAILED"
+        : jobStatus === "QUEUED" || jobStatus === "PROCESSING" ? "PROCESSING"
+          : video.status === "READY" ? "READY"
+            : uploadStatus === "COMPLETED" ? "UPLOADED"
+              : uploadStatus === "CREATED" ? "UPLOADING"
+                : video.status;
+
+      return {
+        id: video.id,
+        title: video.title,
+        description: video.description,
+        visibility: video.visibility,
+        status,
+        createdAt: video.createdAt.toISOString(),
+        updatedAt: video.updatedAt.toISOString(),
+        publishedAt: video.publishedAt?.toISOString() ?? null,
+        channel: video.channel,
+        thumbnailUrl: video.thumbnails[0] ? await this.objectStorage.createPresignedDownloadUrl(video.thumbnails[0].storageKey, 300) : null,
+        views: video._count.history,
+        likes: video._count.likes,
+        comments: video._count.comments,
+        processing: video.processingJobs[0] ? { attempts: video.processingJobs[0].attempts, error: video.processingJobs[0].lastError, updatedAt: video.processingJobs[0].updatedAt.toISOString() } : null
+      };
+    }));
+
+    return { items, total: items.length };
+  }
+
+  async createDraftVideo(userId: string, input: CreateCreatorDraftVideoDto) {
+    const title = input.title?.trim();
+    if (!title || title.length > 100) throw new BadRequestException("A video title between 1 and 100 characters is required");
+    if (input.visibility !== undefined && !["PUBLIC", "UNLISTED", "PRIVATE"].includes(input.visibility)) throw new BadRequestException("Invalid video visibility");
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true, displayName: true, creatorApplication: { select: { handle: true } }, channels: { orderBy: { createdAt: "asc" }, take: 1, select: { id: true } } }
+    });
+    if (!user || (user.role !== "CREATOR" && user.role !== "ADMIN")) throw new ConflictException("Active creator access required");
+
+    if (input.videoId) {
+      const existing = await this.prisma.video.findFirst({ where: { id: input.videoId, creatorId: userId, status: "DRAFT", deletedAt: null } });
+      if (!existing) throw new NotFoundException("Draft video not found");
+      return existing;
+    }
+
+    let channelId = user.channels[0]?.id;
+    if (!channelId) {
+      const baseHandle = (user.creatorApplication?.handle ?? user.displayName).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "creator";
+      let handle = baseHandle;
+      let suffix = 2;
+      while (await this.prisma.channel.findUnique({ where: { handle } })) handle = `${baseHandle}-${suffix++}`;
+      const channel = await this.prisma.channel.create({ data: { ownerId: userId, handle, displayName: user.displayName } });
+      channelId = channel.id;
+    }
+
+    return this.prisma.video.create({
+      data: { creatorId: userId, channelId, title, description: input.description?.trim() || null, visibility: input.visibility ?? "PUBLIC", status: "DRAFT" }
+    });
+  }
+
+  async updateVideo(userId: string, videoId: string, input: UpdateCreatorVideoDto) {
+    const video = await this.prisma.video.findUnique({ where: { id: videoId } });
+    if (!video || video.deletedAt) throw new NotFoundException("Video not found");
+    if (video.creatorId !== userId) throw new ForbiddenException("You do not own this video");
+    if (input.title !== undefined && (!input.title.trim() || input.title.trim().length > 100)) throw new BadRequestException("A video title between 1 and 100 characters is required");
+    if (input.visibility !== undefined && !["PUBLIC", "UNLISTED", "PRIVATE"].includes(input.visibility)) throw new BadRequestException("Invalid video visibility");
+    const updated = await this.prisma.video.update({ where: { id: video.id }, data: {
+      ...(input.title === undefined ? {} : { title: input.title.trim() }),
+      ...(input.description === undefined ? {} : { description: input.description.trim() || null }),
+      ...(input.visibility === undefined ? {} : { visibility: input.visibility })
+    } });
+    await this.prisma.auditLog.create({
+      data: { actorId: userId, action: input.visibility === undefined ? "VIDEO_UPDATED" : "VIDEO_VISIBILITY_CHANGED", entityType: "Video", entityId: video.id, metadata: { fields: Object.keys(input) } }
+    });
+    return updated;
+  }
+
+  async deleteVideo(userId: string, videoId: string) {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      select: { id: true, creatorId: true, deletedAt: true }
+    });
+    if (!video || video.deletedAt) throw new NotFoundException("Video not found");
+    if (video.creatorId !== userId) throw new ForbiddenException("You do not own this video");
+
+    const prefix = this.objectStorage.buildUserVideoKey(userId, videoId, "original").replace(/\/original$/, "");
+    await this.objectStorage.deletePrefix(`${prefix}/`);
+    await this.prisma.processingJob.updateMany({ where: { videoId, status: { in: ["QUEUED", "PROCESSING"] } }, data: { status: "FAILED", lastError: "Video deleted by creator" } });
+    await this.prisma.video.delete({ where: { id: videoId } });
+    await this.prisma.auditLog.create({ data: { actorId: userId, action: "VIDEO_DELETED", entityType: "Video", entityId: videoId } });
+    return { id: videoId, deleted: true };
+  }
+
+  async retryProcessing(userId: string, videoId: string) {
+    const video = await this.prisma.video.findUnique({ where: { id: videoId }, select: { id: true, creatorId: true, deletedAt: true } });
+    if (!video || video.deletedAt) throw new NotFoundException("Video not found");
+    if (video.creatorId !== userId) throw new ForbiddenException("You do not own this video");
+    const job = await this.prisma.processingJob.findFirst({ where: { videoId, status: "FAILED" }, orderBy: { createdAt: "desc" } });
+    if (!job) throw new ConflictException("This video has no failed processing job to retry");
+    const retried = await this.prisma.processingJob.update({ where: { id: job.id }, data: { status: "QUEUED", availableAt: new Date(), lastError: null } });
+    await this.prisma.video.update({ where: { id: videoId }, data: { status: "DRAFT" } });
+    await this.queue.enqueue(retried.id);
+    return { id: retried.id, status: retried.status };
+  }
+
+  async createThumbnailUpload(userId: string, videoId: string, contentType: string, fileSize: number) {
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+    if (!allowedTypes.has(contentType) || !Number.isInteger(fileSize) || fileSize <= 0 || fileSize > 10 * 1024 * 1024) throw new BadRequestException("Use a JPEG, PNG, or WebP thumbnail up to 10 MB");
+    const video = await this.prisma.video.findFirst({ where: { id: videoId, creatorId: userId, deletedAt: null } });
+    if (!video) throw new NotFoundException("Video not found");
+    const extension = contentType === "image/jpeg" ? "jpg" : contentType.split("/")[1];
+    const key = this.objectStorage.buildUserVideoKey(userId, videoId, "thumbnails", `${randomUUID()}.${extension}`);
+    return { key, uploadUrl: await this.objectStorage.createPresignedUploadUrl(key, contentType) };
+  }
+
+  async completeThumbnailUpload(userId: string, videoId: string, key: string) {
+    const video = await this.prisma.video.findFirst({ where: { id: videoId, creatorId: userId, deletedAt: null } });
+    if (!video) throw new NotFoundException("Video not found");
+    const prefix = `${this.objectStorage.buildUserVideoKey(userId, videoId, "thumbnails")}/`;
+    if (!key.startsWith(prefix) || key.includes("..")) throw new BadRequestException("Invalid thumbnail key");
+    const metadata = await this.objectStorage.getObjectMetadata(key);
+    if (!["image/jpeg", "image/png", "image/webp"].includes(metadata.contentType) || metadata.contentLength <= 0 || metadata.contentLength > 10 * 1024 * 1024) {
+      await this.objectStorage.deleteObject(key);
+      throw new BadRequestException("Uploaded thumbnail is invalid");
+    }
+    const extension = key.split(".").pop()?.toLowerCase();
+    const bytes = await this.objectStorage.getObjectPrefix(key, 12);
+    const signatureType = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      ? "image/jpeg"
+      : bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        ? "image/png"
+        : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+          ? "image/webp"
+          : null;
+    const expectedExtension = signatureType === "image/jpeg" ? "jpg" : signatureType?.split("/")[1];
+    if (!signatureType || signatureType !== metadata.contentType || extension !== expectedExtension) {
+      await this.objectStorage.deleteObject(key);
+      throw new BadRequestException("Uploaded thumbnail content does not match its image type");
+    }
+    const previous = await this.prisma.thumbnail.findFirst({ where: { videoId, isCustom: true } });
+    await this.prisma.$transaction(async (transaction) => {
+      await transaction.thumbnail.updateMany({ where: { videoId, isDefault: true }, data: { isDefault: false } });
+      await transaction.thumbnail.deleteMany({ where: { videoId, isCustom: true } });
+      await transaction.thumbnail.create({ data: { videoId, storageKey: key, isDefault: true, isCustom: true } });
+    });
+    if (previous && previous.storageKey !== key) await this.objectStorage.deleteObject(previous.storageKey);
+    return { videoId, key, contentType: metadata.contentType, fileSize: metadata.contentLength };
+  }
+
+  async removeThumbnail(userId: string, videoId: string, key: string) {
+    const video = await this.prisma.video.findFirst({ where: { id: videoId, creatorId: userId, deletedAt: null } });
+    if (!video) throw new NotFoundException("Video not found");
+    const prefix = `${this.objectStorage.buildUserVideoKey(userId, videoId, "thumbnails")}/`;
+    if (!key.startsWith(prefix) || key.includes("..")) throw new BadRequestException("Invalid thumbnail key");
+    const thumbnail = await this.prisma.thumbnail.findFirst({ where: { videoId, storageKey: key, isCustom: true } });
+    if (!thumbnail) throw new NotFoundException("Custom thumbnail not found");
+    await this.prisma.thumbnail.delete({ where: { id: thumbnail.id } });
+    await this.objectStorage.deleteObject(key);
+    return { videoId, key, removed: true };
   }
 
   async checkHandle(handleInput: string, userId: string) {

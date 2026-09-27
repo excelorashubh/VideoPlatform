@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from "@nestjs/common";
-import type { CreateCommentDto, DeleteCommentDto } from "./comment.dto.js";
+import { PrismaService } from "../../database/prisma.service.js";
+import type { CreateCommentDto } from "./comment.dto.js";
 
 export type Comment = CreateCommentDto & {
   id: string;
@@ -9,36 +10,28 @@ export type Comment = CreateCommentDto & {
 
 @Injectable()
 export class CommentsService {
-  private readonly comments = new Map<string, Comment>();
+  constructor(private readonly prisma: PrismaService) {}
 
-  create(input: CreateCommentDto): Comment {
-    if (!input.authorId || !input.videoId || !input.body?.trim()) {
-      throw new BadRequestException("authorId, videoId, and a non-empty body are required");
-    }
+  async create(authorId: string, input: CreateCommentDto) {
+    const body = input.body?.trim();
+    if (!input.videoId || !body || body.length > 2000) throw new BadRequestException("A comment between 1 and 2000 characters is required");
+    const video = await this.prisma.video.findFirst({ where: { id: input.videoId, visibility: { in: ["PUBLIC", "UNLISTED"] }, status: "READY", deletedAt: null }, select: { id: true } });
+    if (!video) throw new NotFoundException("Video not found");
     if (input.parentId) {
-      const parent = this.get(input.parentId);
-      if (parent.videoId !== input.videoId) throw new ConflictException("Reply parent must belong to the same video");
+      const parent = await this.prisma.comment.findFirst({ where: { id: input.parentId, videoId: input.videoId, deletedAt: null }, select: { id: true } });
+      if (!parent) throw new ConflictException("Reply parent must belong to the same video");
     }
-    const comment: Comment = { ...input, body: input.body.trim(), id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    this.comments.set(comment.id, comment);
-    return comment;
+    return this.prisma.comment.create({ data: { authorId, videoId: input.videoId, parentId: input.parentId, body }, include: { author: { select: { id: true, displayName: true } } } });
   }
 
-  list(videoId: string): Comment[] {
-    return [...this.comments.values()].filter((comment) => comment.videoId === videoId && !comment.deletedAt);
+  list(videoId: string) {
+    return this.prisma.comment.findMany({ where: { videoId, deletedAt: null }, orderBy: { createdAt: "desc" }, take: 50, include: { author: { select: { id: true, displayName: true } } } });
   }
 
-  remove(id: string, input: DeleteCommentDto): Comment {
-    const comment = this.get(id);
-    if (comment.authorId !== input.authorId) throw new ConflictException("Only the comment author can delete this comment");
-    const deleted = { ...comment, body: "", deletedAt: new Date().toISOString() };
-    this.comments.set(id, deleted);
-    return deleted;
-  }
-
-  private get(id: string): Comment {
-    const comment = this.comments.get(id);
+  async remove(id: string, userId: string) {
+    const comment = await this.prisma.comment.findUnique({ where: { id }, select: { authorId: true } });
     if (!comment) throw new NotFoundException("Comment not found");
-    return comment;
+    if (comment.authorId !== userId) throw new ConflictException("Only the comment author can delete this comment");
+    return this.prisma.comment.update({ where: { id }, data: { deletedAt: new Date(), body: "" } });
   }
 }

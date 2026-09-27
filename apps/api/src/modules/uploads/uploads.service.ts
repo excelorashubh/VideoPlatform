@@ -41,8 +41,12 @@ export class UploadsService {
     if (!video) throw new NotFoundException("Video not found");
 
     const safeFilename = input.filename.replace(/\\/g, "/").split("/").pop() ?? "upload";
-    const storageKey = this.objectStorage.buildUserVideoKey(userId, input.videoId, "original", safeFilename);
     const uploadId = crypto.randomUUID();
+    const extensionIndex = safeFilename.lastIndexOf(".");
+    const uniqueFilename = extensionIndex > 0
+      ? `${safeFilename.slice(0, extensionIndex)}-${uploadId}${safeFilename.slice(extensionIndex)}`
+      : `${safeFilename}-${uploadId}`;
+    const storageKey = this.objectStorage.buildUserVideoKey(userId, input.videoId, "original", uniqueFilename);
     const upload = await this.prisma.upload.create({
       data: {
         id: uploadId,

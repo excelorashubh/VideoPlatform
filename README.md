@@ -17,6 +17,6 @@ GVP is the neutral internal project name for a global video-sharing and streamin
 4. Run `npm run db:validate` with `DATABASE_URL` set.
 5. Run `npm run db:migrate -- --name init` to create the initial PostgreSQL migration.
 6. Run `npm run typecheck` and `npm run build`.
-7. Start the API with `npm run dev:api` and the web app with `npm run dev:web`.
+7. Start the API with `npm run dev:api`, the worker with `npm run dev:worker`, and the web app with `npm run dev:web`.
 
 The initial surfaces are intentionally small. Prisma models live in `packages/database/prisma/schema.prisma`; API modules should access them through repositories and the shared `PrismaService`. Workers and provider adapters should be added behind the boundaries documented in `docs/architecture.md`.
