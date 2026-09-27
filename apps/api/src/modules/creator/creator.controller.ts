@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from "@nestjs/common";
 import { CurrentUser } from "../auth/current-user.decorator.js";
-import { CreateCreatorDraftVideoDto, SubmitCreatorApplicationDto, UpdateCreatorVideoDto } from "./creator.dto.js";
+import { CreateCreatorDraftVideoDto, SubmitCreatorApplicationDto, UpdateChannelCustomizationDto, UpdateCreatorVideoDto } from "./creator.dto.js";
 import { CreatorService } from "./creator.service.js";
 
 @Controller("creator")
@@ -20,6 +20,50 @@ export class CreatorController {
   @Get("content")
   getContent(@CurrentUser() user: { id: string }) {
     return this.creatorService.getContent(user.id);
+  }
+
+  @Get("comments")
+  getComments(
+    @CurrentUser() user: { id: string },
+    @Query("page") page = "1",
+    @Query("search") search = "",
+    @Query("videoId") videoId?: string
+  ) {
+    return this.creatorService.getComments(user.id, page, search, videoId);
+  }
+
+  @Delete("comments/:commentId")
+  deleteCreatorComment(@CurrentUser() user: { id: string }, @Param("commentId") commentId: string) {
+    return this.creatorService.deleteCreatorComment(user.id, commentId);
+  }
+
+  @Get("customization")
+  getCustomization(@CurrentUser() user: { id: string }) {
+    return this.creatorService.getCustomization(user.id);
+  }
+
+  @Patch("customization")
+  updateCustomization(@CurrentUser() user: { id: string }, @Body() input: UpdateChannelCustomizationDto) {
+    return this.creatorService.updateCustomization(user.id, input);
+  }
+
+  @Post("customization/assets/upload")
+  createChannelAssetUpload(@CurrentUser() user: { id: string }, @Body() input: { kind: "avatar" | "banner"; contentType: string; fileSize: number }) {
+    return this.creatorService.createChannelAssetUpload(user.id, input.kind, input.contentType, input.fileSize);
+  }
+
+  @Post("customization/assets/complete")
+  completeChannelAssetUpload(@CurrentUser() user: { id: string }, @Body() input: { kind: "avatar" | "banner"; key: string }) {
+    return this.creatorService.completeChannelAssetUpload(user.id, input.kind, input.key);
+  }
+
+  @Get("analytics")
+  getAnalytics(
+    @CurrentUser() user: { id: string },
+    @Query("range") range = "28d",
+    @Query("sort") sort = "views"
+  ) {
+    return this.creatorService.getAnalytics(user.id, range, sort);
   }
 
   @Post("videos/draft")

@@ -3,8 +3,25 @@ import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../database/prisma.service.js";
 import { ObjectStorageService } from "../../storage/object-storage.service.js";
 import { RedisQueueService } from "../../queue/redis-queue.service.js";
-import type { CreateCreatorDraftVideoDto, SubmitCreatorApplicationDto, UpdateCreatorVideoDto } from "./creator.dto.js";
+import type { ChannelAssetKind, CreateCreatorDraftVideoDto, SubmitCreatorApplicationDto, UpdateChannelCustomizationDto, UpdateCreatorVideoDto } from "./creator.dto.js";
 import { isCreatorVerificationComplete } from "./verification-policy.js";
+
+type CreatorAnalyticsRange = "7d" | "28d" | "90d" | "365d" | "lifetime";
+type CreatorAnalyticsSort = "views" | "likes" | "comments";
+type CreatorAnalyticsBucket = { date: string; views: number; likes: number; comments: number; subscriptions: number };
+type CreatorAnalyticsVideoRow = {
+  id: string;
+  title: string;
+  thumbnails: Array<{ storageKey: string }>;
+  createdAt?: Date;
+  publishedAt?: Date | null;
+  status?: string;
+  visibility?: string;
+};
+
+function groupCount(count: true | { _all?: number } | undefined) {
+  return count && typeof count === "object" ? count._all ?? 0 : 0;
+}
 
 @Injectable()
 export class CreatorService {
@@ -140,6 +157,415 @@ export class CreatorService {
     }));
 
     return { items, total: items.length };
+  }
+
+  async getComments(userId: string, pageInput = "1", searchInput = "", videoId?: string) {
+    await this.requireActiveCreator(userId);
+    const page = Number(pageInput);
+    if (!Number.isInteger(page) || page < 1) throw new BadRequestException("Page must be a positive integer");
+    const search = searchInput.trim();
+    if (search.length > 100) throw new BadRequestException("Comment search is limited to 100 characters");
+    const where = {
+      deletedAt: null,
+      ...(videoId ? { videoId } : {}),
+      ...(search ? { body: { contains: search, mode: "insensitive" as const } } : {}),
+      video: { creatorId: userId, deletedAt: null }
+    };
+    const pageSize = 25;
+    const [rows, total, videos] = await Promise.all([
+      this.prisma.comment.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          body: true,
+          videoId: true,
+          parentId: true,
+          createdAt: true,
+          author: { select: { id: true, displayName: true } },
+          video: { select: { id: true, title: true } },
+          _count: { select: { replies: { where: { deletedAt: null } } } }
+        }
+      }),
+      this.prisma.comment.count({ where }),
+      this.prisma.video.findMany({
+        where: { creatorId: userId, deletedAt: null, comments: { some: { deletedAt: null } } },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        select: { id: true, title: true }
+      })
+    ]);
+    return {
+      items: rows.map((comment) => ({
+        id: comment.id,
+        body: comment.body,
+        videoId: comment.videoId,
+        parentId: comment.parentId,
+        createdAt: comment.createdAt.toISOString(),
+        replyCount: comment._count.replies,
+        author: comment.author,
+        video: comment.video
+      })),
+      videos,
+      page,
+      pageSize,
+      total,
+      hasMore: page * pageSize < total
+    };
+  }
+
+  async deleteCreatorComment(userId: string, commentId: string) {
+    await this.requireActiveCreator(userId);
+    const comment = await this.prisma.comment.findFirst({
+      where: { id: commentId, deletedAt: null, video: { creatorId: userId, deletedAt: null } },
+      select: { id: true, videoId: true }
+    });
+    if (!comment) throw new NotFoundException("Comment not found");
+    await this.prisma.$transaction([
+      this.prisma.comment.update({ where: { id: comment.id }, data: { deletedAt: new Date(), body: "" } }),
+      this.prisma.auditLog.create({ data: { actorId: userId, action: "CREATOR_COMMENT_REMOVED", entityType: "Comment", entityId: comment.id, metadata: { videoId: comment.videoId } } })
+    ]);
+    return { id: comment.id, deleted: true };
+  }
+
+  async getCustomization(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        role: true,
+        deletedAt: true,
+        displayName: true,
+        creatorApplication: { select: { status: true, creatorName: true, handle: true, bio: true, profileImageKey: true } },
+        channels: { orderBy: { createdAt: "asc" }, take: 1, select: { id: true, handle: true, displayName: true, description: true, avatarKey: true, bannerKey: true } }
+      }
+    });
+    if (!user || user.deletedAt || (user.role !== "CREATOR" && user.role !== "ADMIN" && user.creatorApplication?.status !== "APPROVED")) {
+      throw new ForbiddenException("Active creator access required");
+    }
+    const channel = user.channels[0] ?? null;
+    const avatarKey = channel?.avatarKey ?? user.creatorApplication?.profileImageKey ?? null;
+    return {
+      creator: { name: user.creatorApplication?.creatorName ?? channel?.displayName ?? user.displayName, handle: user.creatorApplication?.handle ?? channel?.handle ?? null },
+      channel: channel ? {
+        id: channel.id,
+        displayName: channel.displayName,
+        handle: channel.handle,
+        description: channel.description,
+        avatarKey,
+        bannerKey: channel.bannerKey,
+        avatarUrl: avatarKey ? await this.objectStorage.createPresignedDownloadUrl(avatarKey, 300) : null,
+        bannerUrl: channel.bannerKey ? await this.objectStorage.createPresignedDownloadUrl(channel.bannerKey, 300) : null
+      } : null
+    };
+  }
+
+  async updateCustomization(userId: string, input: UpdateChannelCustomizationDto) {
+    await this.requireActiveCreator(userId);
+    const channel = await this.prisma.channel.findFirst({ where: { ownerId: userId }, orderBy: { createdAt: "asc" } });
+    if (!channel) throw new NotFoundException("Creator channel not found");
+    const displayName = input.displayName?.trim();
+    const handle = input.handle === undefined ? undefined : this.normalizeHandle(input.handle);
+    const description = input.description?.trim();
+    if (input.displayName !== undefined && (!displayName || displayName.length < 2 || displayName.length > 50)) throw new BadRequestException("Channel name must be between 2 and 50 characters");
+    if (handle !== undefined && (handle.length < 3 || handle.length > 30 || this.reservedHandles.has(handle))) throw new BadRequestException("Choose a valid channel handle");
+    if (input.description !== undefined && (description?.length ?? 0) > 500) throw new BadRequestException("Channel description must be 500 characters or fewer");
+    if (handle && handle !== channel.handle) {
+      const [existingChannel, existingApplication] = await Promise.all([
+        this.prisma.channel.findUnique({ where: { handle }, select: { id: true } }),
+        this.prisma.creatorApplication.findFirst({ where: { handle, userId: { not: userId } }, select: { id: true } })
+      ]);
+      if (existingChannel || existingApplication) throw new ConflictException("This channel handle is already taken");
+    }
+
+    const updated = await this.prisma.$transaction(async (transaction) => {
+      const savedChannel = await transaction.channel.update({
+        where: { id: channel.id },
+        data: {
+          ...(displayName === undefined ? {} : { displayName }),
+          ...(handle === undefined ? {} : { handle }),
+          ...(input.description === undefined ? {} : { description: description || null })
+        }
+      });
+      const application = await transaction.creatorApplication.findUnique({ where: { userId }, select: { id: true } });
+      if (application) await transaction.creatorApplication.update({
+        where: { userId },
+        data: {
+          ...(displayName === undefined ? {} : { creatorName: displayName }),
+          ...(handle === undefined ? {} : { handle }),
+          ...(input.description === undefined ? {} : { bio: description || null })
+        }
+      });
+      await transaction.auditLog.create({
+        data: { actorId: userId, action: "CHANNEL_CUSTOMIZATION_UPDATED", entityType: "Channel", entityId: channel.id, metadata: { fields: Object.keys(input) } }
+      });
+      return savedChannel;
+    });
+    return { id: updated.id, displayName: updated.displayName, handle: updated.handle, description: updated.description };
+  }
+
+  async createChannelAssetUpload(userId: string, kind: ChannelAssetKind, contentType: string, fileSize: number) {
+    await this.requireChannel(userId);
+    if (kind !== "avatar" && kind !== "banner") throw new BadRequestException("Unsupported channel asset");
+    const maxSize = kind === "avatar" ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(contentType) || !Number.isInteger(fileSize) || fileSize <= 0 || fileSize > maxSize) {
+      throw new BadRequestException(`Use a JPEG, PNG, or WebP ${kind} up to ${maxSize / (1024 * 1024)} MB`);
+    }
+    const extension = contentType === "image/jpeg" ? "jpg" : contentType.split("/")[1];
+    const key = this.objectStorage.buildChannelAssetKey(userId, kind, `${randomUUID()}.${extension}`);
+    return { key, uploadUrl: await this.objectStorage.createPresignedUploadUrl(key, contentType) };
+  }
+
+  async completeChannelAssetUpload(userId: string, kind: ChannelAssetKind, key: string) {
+    const channel = await this.requireChannel(userId);
+    if (kind !== "avatar" && kind !== "banner") throw new BadRequestException("Unsupported channel asset");
+    const prefix = this.objectStorage.buildChannelAssetKey(userId, kind, "");
+    const maxSize = kind === "avatar" ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
+    if (!key.startsWith(prefix) || key.includes("..")) throw new BadRequestException("Invalid channel asset key");
+    const metadata = await this.objectStorage.getObjectMetadata(key);
+    if (!["image/jpeg", "image/png", "image/webp"].includes(metadata.contentType) || metadata.contentLength <= 0 || metadata.contentLength > maxSize) {
+      throw new BadRequestException("Uploaded channel image is invalid");
+    }
+    const bytes = await this.objectStorage.getObjectPrefix(key, 12);
+    const signatureType = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      ? "image/jpeg"
+      : bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        ? "image/png"
+        : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP"
+          ? "image/webp"
+          : null;
+    if (signatureType !== metadata.contentType) {
+      await this.objectStorage.deleteObject(key);
+      throw new BadRequestException("Uploaded image content does not match its type");
+    }
+    await this.prisma.channel.update({ where: { id: channel.id }, data: kind === "avatar" ? { avatarKey: key } : { bannerKey: key } });
+    await this.prisma.auditLog.create({ data: { actorId: userId, action: "CHANNEL_ASSET_UPDATED", entityType: "Channel", entityId: channel.id, metadata: { kind, key } } });
+    return { channelId: channel.id, kind, key, updated: true };
+  }
+
+  async getAnalytics(userId: string, rangeInput = "28d", sortInput = "views") {
+    const ranges = new Set<CreatorAnalyticsRange>(["7d", "28d", "90d", "365d", "lifetime"]);
+    const sorts = new Set<CreatorAnalyticsSort>(["views", "likes", "comments"]);
+    if (!ranges.has(rangeInput as CreatorAnalyticsRange)) throw new BadRequestException("Unsupported analytics range");
+    if (!sorts.has(sortInput as CreatorAnalyticsSort)) throw new BadRequestException("Unsupported analytics sort");
+
+    const range = rangeInput as CreatorAnalyticsRange;
+    const sortBy = sortInput as CreatorAnalyticsSort;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        role: true,
+        deletedAt: true,
+        displayName: true,
+        creatorApplication: { select: { status: true, creatorName: true, handle: true } },
+        channels: { orderBy: { createdAt: "asc" }, take: 1, select: { displayName: true, handle: true } }
+      }
+    });
+    if (!user || user.deletedAt || (user.role !== "CREATOR" && user.role !== "ADMIN" && user.creatorApplication?.status !== "APPROVED")) {
+      throw new ForbiddenException("Active creator access required");
+    }
+
+    const now = new Date();
+    const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+    const rangeDays: Record<Exclude<CreatorAnalyticsRange, "lifetime">, number> = { "7d": 7, "28d": 28, "90d": 90, "365d": 365 };
+    const days = range === "lifetime" ? null : rangeDays[range];
+    const periodStart = days === null ? new Date(0) : new Date(periodEnd.getTime() - days * 24 * 60 * 60 * 1000);
+    const previousStart = days === null ? null : new Date(periodStart.getTime() - days * 24 * 60 * 60 * 1000);
+    const granularity = range === "lifetime" ? "month" : "day";
+    const dateFormat = range === "lifetime" ? "YYYY-MM" : "YYYY-MM-DD";
+
+    const aggregatePeriod = (start: Date, end: Date) => this.prisma.$queryRaw<CreatorAnalyticsBucket[]>`
+      WITH analytics_events AS (
+        SELECT date_trunc(${granularity}, history."watchedAt") AS bucket,
+          count(*)::int AS views, 0::int AS likes, 0::int AS comments, 0::int AS subscriptions
+        FROM "WatchHistory" history
+        INNER JOIN "Video" video ON video.id = history."videoId"
+        WHERE video."creatorId" = ${userId}::uuid
+          AND video."deletedAt" IS NULL
+          AND video."status" = 'READY'
+          AND video."visibility" IN ('PUBLIC', 'UNLISTED')
+          AND history."watchedAt" >= ${start}
+          AND history."watchedAt" < ${end}
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc(${granularity}, reaction."createdAt") AS bucket,
+          0::int AS views, count(*)::int AS likes, 0::int AS comments, 0::int AS subscriptions
+        FROM "VideoReaction" reaction
+        INNER JOIN "Video" video ON video.id = reaction."videoId"
+        WHERE video."creatorId" = ${userId}::uuid
+          AND video."deletedAt" IS NULL
+          AND video."status" = 'READY'
+          AND video."visibility" IN ('PUBLIC', 'UNLISTED')
+          AND reaction."type" = 'LIKE'
+          AND reaction."createdAt" >= ${start}
+          AND reaction."createdAt" < ${end}
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc(${granularity}, comment."createdAt") AS bucket,
+          0::int AS views, 0::int AS likes, count(*)::int AS comments, 0::int AS subscriptions
+        FROM "Comment" comment
+        INNER JOIN "Video" video ON video.id = comment."videoId"
+        WHERE video."creatorId" = ${userId}::uuid
+          AND video."deletedAt" IS NULL
+          AND video."status" = 'READY'
+          AND video."visibility" IN ('PUBLIC', 'UNLISTED')
+          AND comment."deletedAt" IS NULL
+          AND comment."createdAt" >= ${start}
+          AND comment."createdAt" < ${end}
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc(${granularity}, subscription."createdAt") AS bucket,
+          0::int AS views, 0::int AS likes, 0::int AS comments, count(*)::int AS subscriptions
+        FROM "Subscription" subscription
+        INNER JOIN "Channel" channel ON channel.id = subscription."channelId"
+        WHERE channel."ownerId" = ${userId}::uuid
+          AND subscription."createdAt" >= ${start}
+          AND subscription."createdAt" < ${end}
+        GROUP BY 1
+      )
+      SELECT to_char(bucket, ${dateFormat}) AS date,
+        sum(views)::int AS views,
+        sum(likes)::int AS likes,
+        sum(comments)::int AS comments,
+        sum(subscriptions)::int AS subscriptions
+      FROM analytics_events
+      GROUP BY bucket
+      ORDER BY bucket
+    `;
+
+    const eligibleVideoFilter = {
+      creatorId: userId,
+      deletedAt: null,
+      status: "READY" as const,
+      visibility: { in: ["PUBLIC", "UNLISTED"] as ("PUBLIC" | "UNLISTED")[] }
+    };
+    const periodFilter = { gte: periodStart, lt: periodEnd };
+    const [seriesRows, previousRows, subscribers, firstVideo, uniqueViewers, viewsByVideo, likesByVideo, commentsByVideo, recentRows] = await Promise.all([
+      aggregatePeriod(periodStart, periodEnd),
+      previousStart ? aggregatePeriod(previousStart, periodStart) : Promise.resolve(null),
+      this.prisma.subscription.count({ where: { channel: { ownerId: userId } } }),
+      this.prisma.video.findFirst({ where: { creatorId: userId, deletedAt: null }, orderBy: { createdAt: "asc" }, select: { createdAt: true } }),
+      this.prisma.$queryRaw<Array<{ count: number }>>`
+        SELECT count(DISTINCT history."userId")::int AS count
+        FROM "WatchHistory" history
+        INNER JOIN "Video" video ON video.id = history."videoId"
+        WHERE video."creatorId" = ${userId}::uuid
+          AND video."deletedAt" IS NULL
+          AND video."status" = 'READY'
+          AND video."visibility" IN ('PUBLIC', 'UNLISTED')
+          AND history."watchedAt" >= ${periodStart}
+          AND history."watchedAt" < ${periodEnd}
+      `,
+      this.prisma.watchHistory.groupBy({
+        by: ["videoId"],
+        where: { watchedAt: periodFilter, video: eligibleVideoFilter },
+        _count: { _all: true }
+      }),
+      this.prisma.videoReaction.groupBy({
+        by: ["videoId"],
+        where: { createdAt: periodFilter, type: "LIKE", video: eligibleVideoFilter },
+        _count: { _all: true }
+      }),
+      this.prisma.comment.groupBy({
+        by: ["videoId"],
+        where: { createdAt: periodFilter, deletedAt: null, video: eligibleVideoFilter },
+        _count: { _all: true }
+      }),
+      this.prisma.video.findMany({
+        where: { creatorId: userId, deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 6,
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          visibility: true,
+          createdAt: true,
+          publishedAt: true,
+          thumbnails: { where: { isDefault: true }, take: 1, select: { storageKey: true } }
+        }
+      })
+    ]);
+
+    const metrics = (rows: CreatorAnalyticsBucket[] | null) => (rows ?? []).reduce((total, row) => ({
+      views: total.views + row.views,
+      likes: total.likes + row.likes,
+      comments: total.comments + row.comments,
+      subscriptions: total.subscriptions + row.subscriptions
+    }), { views: 0, likes: 0, comments: 0, subscriptions: 0 });
+    const overview = { ...metrics(seriesRows), subscribers };
+    const previousPeriod = previousRows ? metrics(previousRows) : null;
+    const seriesStart = range === "lifetime"
+      ? firstVideo?.createdAt ?? new Date(periodEnd.getTime() - 28 * 24 * 60 * 60 * 1000)
+      : periodStart;
+    const cursor = new Date(seriesStart);
+    if (granularity === "month") cursor.setUTCDate(1);
+    else cursor.setUTCHours(0, 0, 0, 0);
+    const rowByDate = new Map(seriesRows.map((row) => [row.date, row]));
+    const series: CreatorAnalyticsBucket[] = [];
+    while (cursor < periodEnd) {
+      const date = granularity === "month"
+        ? `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`
+        : cursor.toISOString().slice(0, 10);
+      series.push(rowByDate.get(date) ?? { date, views: 0, likes: 0, comments: 0, subscriptions: 0 });
+      if (granularity === "month") cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+      else cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const viewCounts = new Map(viewsByVideo.map((row) => [row.videoId, groupCount(row._count)]));
+    const likeCounts = new Map(likesByVideo.map((row) => [row.videoId, groupCount(row._count)]));
+    const commentCounts = new Map(commentsByVideo.map((row) => [row.videoId, groupCount(row._count)]));
+    const videoIds = new Set([...viewCounts.keys(), ...likeCounts.keys(), ...commentCounts.keys()]);
+    const valueFor = (id: string) => sortBy === "views" ? viewCounts.get(id) ?? 0 : sortBy === "likes" ? likeCounts.get(id) ?? 0 : commentCounts.get(id) ?? 0;
+    const topIds = [...videoIds].sort((left, right) => valueFor(right) - valueFor(left)).slice(0, 8);
+    const [topRows, uniqueViewerRows] = await Promise.all([
+      topIds.length ? this.prisma.video.findMany({
+        where: { id: { in: topIds }, creatorId: userId, deletedAt: null },
+        select: {
+          id: true,
+          title: true,
+          thumbnails: { where: { isDefault: true }, take: 1, select: { storageKey: true } }
+        }
+      }) : Promise.resolve([]),
+      uniqueViewers
+    ]);
+    const topById = new Map(topRows.map((video) => [video.id, video]));
+    const presentVideos = async (rows: CreatorAnalyticsVideoRow[], includePublication: boolean) => Promise.all(rows.map(async (video) => ({
+      id: video.id,
+      title: video.title,
+      thumbnailUrl: video.thumbnails[0] ? await this.objectStorage.createPresignedDownloadUrl(video.thumbnails[0].storageKey, 300) : null,
+      ...(includePublication && video.createdAt ? {
+        createdAt: video.createdAt.toISOString(),
+        publishedAt: video.publishedAt?.toISOString() ?? null,
+        status: video.status ?? "DRAFT",
+        visibility: video.visibility ?? "PRIVATE"
+      } : {}),
+      views: viewCounts.get(video.id) ?? 0,
+      likes: likeCounts.get(video.id) ?? 0,
+      comments: commentCounts.get(video.id) ?? 0
+    })));
+
+    const [topVideos, recentVideos] = await Promise.all([
+      presentVideos(topIds.flatMap((id) => topById.has(id) ? [topById.get(id)!] : []), false),
+      presentVideos(recentRows, true)
+    ]);
+
+    return {
+      range,
+      sortBy,
+      creator: {
+        name: user.creatorApplication?.creatorName ?? user.channels[0]?.displayName ?? user.displayName,
+        handle: user.creatorApplication?.handle ?? user.channels[0]?.handle ?? null
+      },
+      overview,
+      previousPeriod,
+      series,
+      audience: { uniqueViewers: uniqueViewerRows[0]?.count ?? 0 },
+      topVideos,
+      recentVideos,
+      hasActivity: overview.views > 0 || overview.likes > 0 || overview.comments > 0 || overview.subscribers > 0
+    };
   }
 
   async createDraftVideo(userId: string, input: CreateCreatorDraftVideoDto) {
@@ -385,5 +811,19 @@ export class CreatorService {
 
   private normalizeHandle(value: string) {
     return value.trim().replace(/^@+/, "").toLowerCase().replace(/[^a-z0-9-]/g, "");
+  }
+
+  private async requireActiveCreator(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { role: true, deletedAt: true, creatorApplication: { select: { status: true } } } });
+    if (!user || user.deletedAt || (user.role !== "CREATOR" && user.role !== "ADMIN" && user.creatorApplication?.status !== "APPROVED")) {
+      throw new ForbiddenException("Active creator access required");
+    }
+  }
+
+  private async requireChannel(userId: string) {
+    await this.requireActiveCreator(userId);
+    const channel = await this.prisma.channel.findFirst({ where: { ownerId: userId }, orderBy: { createdAt: "asc" } });
+    if (!channel) throw new NotFoundException("Creator channel not found");
+    return channel;
   }
 }

@@ -19,6 +19,8 @@ const studioPaths = new Set([
 
 export function CreatorLayoutFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const playlistDetail = pathname.startsWith("/creator/playlists/");
+  const inStudio = studioPaths.has(pathname) || playlistDetail;
 
-  return !studioPaths.has(pathname) ? children : <CreatorStudio content={pathname === "/creator/content" ? children : undefined} fallback={pathname === "/creator" ? children : undefined} />;
+  return !inStudio ? children : <CreatorStudio section={playlistDetail ? "Playlists" : undefined} content={pathname !== "/creator" ? children : undefined} fallback={pathname === "/creator" ? children : undefined} />;
 }

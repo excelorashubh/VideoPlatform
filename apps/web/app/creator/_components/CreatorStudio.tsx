@@ -55,7 +55,10 @@ export function CreatorStudio({ section = "Dashboard", fallback, content }: { se
     finally { setLoading(false); }
   }
 
-  useEffect(() => { if (getStoredSessionToken()) void load(); }, []);
+  useEffect(() => {
+    if (getStoredSessionToken()) void load();
+    else window.location.replace(`/auth?next=${encodeURIComponent(pathname)}`);
+  }, [pathname]);
 
   const creatorName = dashboard?.creator.name ?? "Creator";
   const active = navigation.find((item) => item.href === pathname) ?? navigation.find((item) => item.label === section) ?? navigation[0];
@@ -77,11 +80,11 @@ export function CreatorStudio({ section = "Dashboard", fallback, content }: { se
     </aside>
     {open ? <button className="creator-studio-backdrop" aria-label="Close navigation" onClick={() => setOpen(false)} /> : null}
     <main className="creator-studio-main">
-      <header className="creator-studio-header"><button className="creator-studio-menu" aria-label="Toggle creator navigation" aria-expanded={open || !collapsed} onClick={() => { if (window.matchMedia("(max-width: 800px)").matches) setOpen((value) => !value); else setCollapsed((value) => !value); }}>☰</button><div className="creator-studio-header-title"><span>GVP</span><strong>Creator Studio</strong></div><input className="creator-studio-search" aria-label="Search studio" placeholder="Search your studio" /><div className="creator-studio-header-actions"><Link href="/creator/upload" className="creator-studio-create">+ Create</Link><span className="creator-studio-header-avatar">{initials(creatorName)}</span></div></header>
+      <header className="creator-studio-header"><button className="creator-studio-menu" aria-label="Toggle creator navigation" aria-expanded={open || !collapsed} onClick={() => { if (window.matchMedia("(max-width: 800px)").matches) setOpen((value) => !value); else setCollapsed((value) => !value); }}>☰</button><div className="creator-studio-header-title"><span>GVP</span><strong>Creator Studio</strong></div><input className="creator-studio-search" aria-label="Search studio" placeholder="Search your studio" /><div className="creator-studio-header-actions"><details className="creator-studio-create-menu"><summary className="creator-studio-create">+ Create</summary><div className="creator-studio-create-popover" role="menu"><Link href="/creator/upload" role="menuitem">Upload video</Link><Link href="/creator/playlists?new=1" role="menuitem">Create playlist</Link></div></details><span className="creator-studio-header-avatar">{initials(creatorName)}</span></div></header>
       <div className="creator-studio-content">
-        {loading ? <div className="creator-studio-loading"><span /><span /><span /></div> : error ? <section className="creator-studio-error"><h2>Unable to load this section</h2><p>{error}</p><button onClick={() => void load()}>Retry</button></section> : dashboard ? <>
+        {loading ? <div className="creator-studio-loading"><span /><span /><span /></div> : error && activeSection !== "Analytics" && !content ? <section className="creator-studio-error"><h2>Unable to load this section</h2><p>{error}</p><button onClick={() => void load()}>Retry</button></section> : activeSection !== "Dashboard" && content ? content : dashboard ? <>
           <div className="creator-studio-page-heading"><div><p className="creator-studio-eyebrow">{active.label}</p><h1>{activeSection === "Dashboard" ? "Channel dashboard" : active.label}</h1><p>Here&apos;s what&apos;s happening with your channel.</p></div><Link href="/creator/upload" className="creator-studio-primary">Upload video</Link></div>
-          {activeSection === "Content" && content ? content : activeSection !== "Dashboard" ? <section className="creator-studio-future"><span className="creator-studio-future-mark">{active.label.slice(0, 1)}</span><h2>{active.label}</h2><p>{`${active.label} tools are coming soon. Your creator data remains protected while this workspace is being expanded.`}</p></section> : <DashboardOverview dashboard={dashboard} />}
+          <DashboardOverview dashboard={dashboard} />
         </> : null}
       </div>
     </main>

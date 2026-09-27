@@ -1,1 +1,5 @@
-export default function CreatorPlaylistsPage() { return null; }
+import { CreatorPlaylistsDashboard } from "./CreatorPlaylistsDashboard";
+
+export default function CreatorPlaylistsPage() {
+	return <CreatorPlaylistsDashboard />;
+}

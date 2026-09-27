@@ -19,3 +19,11 @@ export class UpdateCreatorVideoDto {
   description?: string;
   visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE";
 }
+
+export class UpdateChannelCustomizationDto {
+  displayName?: string;
+  handle?: string;
+  description?: string;
+}
+
+export type ChannelAssetKind = "avatar" | "banner";

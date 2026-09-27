@@ -1,1 +1,5 @@
-export default function CreatorCustomizationPage() { return null; }
+import { CreatorCustomizationDashboard } from "./CreatorCustomizationDashboard";
+
+export default function CreatorCustomizationPage() {
+	return <CreatorCustomizationDashboard />;
+}

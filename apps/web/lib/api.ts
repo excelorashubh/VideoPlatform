@@ -164,6 +164,69 @@ export async function getCreatorDashboard() {
   return apiRequest<CreatorDashboard>("/creator/dashboard");
 }
 
+export type CreatorAnalyticsRange = "7d" | "28d" | "90d" | "365d" | "lifetime";
+export type CreatorAnalyticsSort = "views" | "likes" | "comments";
+export type CreatorAnalyticsVideo = {
+  id: string;
+  title: string;
+  thumbnailUrl: string | null;
+  views: number;
+  likes: number;
+  comments: number;
+  createdAt?: string;
+  publishedAt?: string | null;
+  status?: string;
+  visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE";
+};
+export type CreatorAnalyticsResponse = {
+  range: CreatorAnalyticsRange;
+  sortBy: CreatorAnalyticsSort;
+  creator: { name: string; handle: string | null };
+  overview: { views: number; likes: number; comments: number; subscriptions: number; subscribers: number };
+  previousPeriod: { views: number; likes: number; comments: number; subscriptions: number } | null;
+  series: Array<{ date: string; views: number; likes: number; comments: number; subscriptions: number }>;
+  audience: { uniqueViewers: number };
+  topVideos: CreatorAnalyticsVideo[];
+  recentVideos: CreatorAnalyticsVideo[];
+  hasActivity: boolean;
+};
+
+export async function getCreatorAnalytics(range: CreatorAnalyticsRange, sortBy: CreatorAnalyticsSort) {
+  const params = new URLSearchParams({ range, sort: sortBy });
+  return apiRequest<CreatorAnalyticsResponse>(`/creator/analytics?${params.toString()}`);
+}
+
+export type CreatorPlaylistVideo = { id: string; title: string; status: string; visibility: "PUBLIC" | "UNLISTED" | "PRIVATE"; createdAt: string; thumbnailUrl: string | null; position?: number };
+export type CreatorPlaylist = { id: string; title: string; isPublic: boolean; videoCount: number; createdAt: string; updatedAt: string; thumbnailUrl?: string | null; videos?: CreatorPlaylistVideo[] };
+export async function getCreatorPlaylists() { return apiRequest<CreatorPlaylist[]>("/creator/playlists"); }
+export async function getCreatorPlaylistVideos() { return apiRequest<Omit<CreatorPlaylistVideo, "position">[]>("/creator/playlists/videos"); }
+export async function getCreatorPlaylist(playlistId: string) { return apiRequest<CreatorPlaylist & { videos: CreatorPlaylistVideo[] }>(`/creator/playlists/${encodeURIComponent(playlistId)}`); }
+export async function createCreatorPlaylist(input: { title: string; isPublic: boolean }) { return apiRequest<CreatorPlaylist>("/creator/playlists", { method: "POST", body: JSON.stringify(input) }); }
+export async function updateCreatorPlaylist(playlistId: string, input: { title: string; isPublic: boolean }) { return apiRequest<CreatorPlaylist>(`/creator/playlists/${encodeURIComponent(playlistId)}`, { method: "PATCH", body: JSON.stringify(input) }); }
+export async function deleteCreatorPlaylist(playlistId: string) { return apiRequest<{ id: string; deleted: boolean }>(`/creator/playlists/${encodeURIComponent(playlistId)}`, { method: "DELETE" }); }
+export async function addCreatorPlaylistVideo(playlistId: string, videoId: string) { return apiRequest<CreatorPlaylist & { videos: CreatorPlaylistVideo[] }>(`/creator/playlists/${encodeURIComponent(playlistId)}/videos`, { method: "POST", body: JSON.stringify({ videoId }) }); }
+export async function removeCreatorPlaylistVideo(playlistId: string, videoId: string) { return apiRequest<CreatorPlaylist & { videos: CreatorPlaylistVideo[] }>(`/creator/playlists/${encodeURIComponent(playlistId)}/videos/${encodeURIComponent(videoId)}`, { method: "DELETE" }); }
+export async function reorderCreatorPlaylistVideos(playlistId: string, videoIds: string[]) { return apiRequest<CreatorPlaylist & { videos: CreatorPlaylistVideo[] }>(`/creator/playlists/${encodeURIComponent(playlistId)}/videos/order`, { method: "PATCH", body: JSON.stringify({ videoIds }) }); }
+
+export type CreatorManagedComment = { id: string; body: string; videoId: string; parentId: string | null; createdAt: string; replyCount: number; author: { id: string; displayName: string }; video: { id: string; title: string } };
+export type CreatorCommentsResponse = { items: CreatorManagedComment[]; videos: Array<{ id: string; title: string }>; page: number; pageSize: number; total: number; hasMore: boolean };
+export async function getCreatorComments(input: { page?: number; search?: string; videoId?: string } = {}) {
+  const params = new URLSearchParams({ page: String(input.page ?? 1) });
+  if (input.search) params.set("search", input.search);
+  if (input.videoId) params.set("videoId", input.videoId);
+  return apiRequest<CreatorCommentsResponse>(`/creator/comments?${params.toString()}`);
+}
+export async function deleteCreatorComment(commentId: string) { return apiRequest<{ id: string; deleted: boolean }>(`/creator/comments/${encodeURIComponent(commentId)}`, { method: "DELETE" }); }
+
+export type CreatorCustomization = {
+  creator: { name: string; handle: string | null };
+  channel: { id: string; displayName: string; handle: string; description: string | null; avatarKey: string | null; bannerKey: string | null; avatarUrl: string | null; bannerUrl: string | null } | null;
+};
+export async function getCreatorCustomization() { return apiRequest<CreatorCustomization>("/creator/customization"); }
+export async function updateCreatorCustomization(input: { displayName?: string; handle?: string; description?: string }) { return apiRequest<{ id: string; displayName: string; handle: string; description: string | null }>("/creator/customization", { method: "PATCH", body: JSON.stringify(input) }); }
+export async function createChannelAssetUpload(input: { kind: "avatar" | "banner"; contentType: string; fileSize: number }) { return apiRequest<{ key: string; uploadUrl: string }>("/creator/customization/assets/upload", { method: "POST", body: JSON.stringify(input) }); }
+export async function completeChannelAssetUpload(input: { kind: "avatar" | "banner"; key: string }) { return apiRequest<{ channelId: string; kind: string; key: string; updated: boolean }>("/creator/customization/assets/complete", { method: "POST", body: JSON.stringify(input) }); }
+
 export type CreatorContentItem = {
   id: string;
   title: string;

@@ -1,1 +1,5 @@
-export default function CreatorCommentsPage() { return null; }
+import { CreatorCommentsDashboard } from "./CreatorCommentsDashboard";
+
+export default function CreatorCommentsPage() {
+	return <CreatorCommentsDashboard />;
+}
