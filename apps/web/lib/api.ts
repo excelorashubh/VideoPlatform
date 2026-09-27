@@ -220,6 +220,11 @@ export function getPublicVideoMediaUrl(id: string) {
   return `${API_BASE_URL}/videos/${encodeURIComponent(id)}/stream/master.m3u8`;
 }
 
+export type VideoPlayback = { videoId: string; type: "mp4"; url: string; mimeType: "video/mp4"; expiresIn: number };
+export async function getPublicVideoPlayback(id: string) {
+  return apiRequest<VideoPlayback>(`/videos/${encodeURIComponent(id)}/playback`);
+}
+
 export async function createCreatorDraftVideo(input: { title: string; description?: string; videoId?: string; visibility?: "PUBLIC" | "UNLISTED" | "PRIVATE" }) {
   return apiRequest<{ id: string; creatorId: string; channelId: string; title: string; description: string | null; status: string }>("/creator/videos/draft", {
     method: "POST",

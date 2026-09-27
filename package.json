@@ -2,7 +2,10 @@
   "name": "global-video-platform",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev:web": "npm run dev --workspace @gvp/web",
     "dev:api": "npm run start:dev --workspace @gvp/api",
@@ -14,5 +17,8 @@
     "db:migrate": "npm run db:migrate --workspace @gvp/database",
     "test": "npm run test --workspaces",
     "lint": "npm run lint --workspaces"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.0"
   }
 }

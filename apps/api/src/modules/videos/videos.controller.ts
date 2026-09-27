@@ -28,6 +28,12 @@ export class VideosController {
   }
 
   @Public()
+  @Get(":id/playback")
+  playback(@Param("id") id: string) {
+    return this.videosService.getPlayback(id);
+  }
+
+  @Public()
   @Get(":id/stream/*path")
   async stream(@Param("id") id: string, @Param("path") path: string | string[], @Res() response: Response) {
     const media = await this.videosService.getPublicMedia(id, path);

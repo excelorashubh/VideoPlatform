@@ -89,6 +89,41 @@ export class VideosService {
     };
   }
 
+  async getPlayback(id: string) {
+    const video = await this.prisma.video.findFirst({
+      where: { id, visibility: { in: ["PUBLIC", "UNLISTED"] }, status: "READY", deletedAt: null },
+      select: {
+        id: true,
+        files: { where: { contentType: "video/mp4" }, orderBy: { createdAt: "desc" }, take: 1, select: { storageKey: true, contentType: true } },
+        uploads: { where: { status: "COMPLETED", contentType: "video/mp4" }, orderBy: { completedAt: "desc" }, take: 1, select: { storageKey: true, contentType: true } }
+      }
+    });
+    if (!video) throw new NotFoundException("Video not found");
+
+    const candidates = [...video.files, ...video.uploads];
+    let playableObject: (typeof candidates)[number] | undefined;
+    for (const candidate of candidates) {
+      if (await this.objectStorage.objectExists(candidate.storageKey)) {
+        playableObject = candidate;
+        break;
+      }
+    }
+    if (!playableObject) throw new NotFoundException("Playable MP4 was not found");
+
+    const metadata = await this.objectStorage.getObjectMetadata(playableObject.storageKey);
+    if (metadata.contentLength <= 0 || metadata.contentType !== "video/mp4") {
+      throw new ConflictException("Playable MP4 is invalid");
+    }
+
+    return {
+      videoId: video.id,
+      type: "mp4" as const,
+      url: await this.objectStorage.createPresignedDownloadUrl(playableObject.storageKey, 300),
+      mimeType: "video/mp4" as const,
+      expiresIn: 300
+    };
+  }
+
   async getPublicMedia(id: string, relativePathInput: string | string[]) {
     const relativePath = Array.isArray(relativePathInput) ? relativePathInput.join("/") : relativePathInput;
     const video = await this.prisma.video.findFirst({
